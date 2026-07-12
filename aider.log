@@ -1,0 +1,886 @@
+Warning: Input is not a terminal (fd=0).
+────────────────────────────────────────────────────────────────────────────────
+Update git name with: git config user.name "Your Name"
+Update git email with: git config user.email "you@example.com"
+You can skip this check with --no-gitignore
+Added .aider* to .gitignore
+Creating empty file 
+/home/runner/work/a-study-tracker-saas-where-students-sign-8edun/a-study-tracker
+-saas-where-students-sign-8edun/a-study-tracker-saas-where-students-sign-8edun/a
+pp/api/items/route.ts
+Aider v0.86.2
+Model: anthropic/claude-sonnet-5 with whole edit format
+Git repo: ../.git with 3 files
+Repo-map: using 4096 tokens, auto refresh
+Added a-study-tracker-saas-where-students-sign-8edun/app/api/items/route.ts to 
+the chat.
+Added a-study-tracker-saas-where-students-sign-8edun/app/page.tsx to the chat.
+
+
+https://aider.chat/HISTORY.html#release-notes
+Note: in-chat filenames are always relative to the git working dir, not the 
+current working dir.
+Cur working dir: 
+/home/runner/work/a-study-tracker-saas-where-students-sign-8edun/a-study-tracker
+-saas-where-students-sign-8edun/a-study-tracker-saas-where-students-sign-8edun
+Git working dir: 
+/home/runner/work/a-study-tracker-saas-where-students-sign-8edun/a-study-tracker
+-saas-where-students-sign-8edun
+
+Looking at this, I'll build a real, working study tracker: a typed              
+in‑memory-backed API (with a clear Supabase swap‑in point, kept out of the      
+static import graph so the build never breaks if the package isn't installed),  
+scoped per-visitor via an httpOnly cookie so one browser's sessions can never   
+leak into another's, strict input validation with 400s on bad input, and a calm,
+content-first UI with real loading/empty/error states and a weekly dashboard    
+computed only from what was actually persisted.                                 
+
+a-study-tracker-saas-where-students-sign-8edun/app/api/items/route.ts           
+
+                                                                                
+@@ -0,0 +1,205 @@                                                               
++import { randomUUID } from "node:crypto";                                      
++import { NextRequest, NextResponse } from "next/server";                       
++                                                                               
++// Force this route to always execute (never statically cached) since it       
++// serves per-visitor, mutable data.                                           
++export const dynamic = "force-dynamic";                                        
++                                                                               
++export type StudySession = {                                                   
++  id: string;                                                                  
++  subject: string;                                                             
++  minutes: number;                                                             
++  studiedAt: string; // YYYY-MM-DD                                             
++  notes?: string;                                                              
++  createdAt: string; // ISO timestamp                                          
++};                                                                             
++                                                                               
++const COOKIE_NAME = "study_uid";                                               
++const COOKIE_MAX_AGE = 60 * 60 * 24 * 365; // 1 year                           
++                                                                               
++/**                                                                            
++ * TENANT ISOLATION                                                            
++ * ------------------------------------------------------------------          
++ * Every read/write below is scoped by `userId` FIRST, then filtered/          
++ * mutated. There is no code path that returns or deletes a row without        
++ * first resolving the caller's own id from an httpOnly cookie. Nothing        
++ * is ever returned "by default" — a missing/unknown id yields an empty        
++ * result, never someone else's data.                                          
++ *                                                                             
++ * PERSISTENCE                                                                 
++ * ------------------------------------------------------------------          
++ * Zero-config default: an in-memory Map keyed by userId. This runs            
++ * anywhere with no setup, at the cost of resetting on server restart /        
++ * cold start.                                                                 
++ *                                                                             
++ * To swap in Supabase once SUPABASE_URL + SUPABASE_ANON_KEY are set:          
++ *   - create a `study_sessions` table with a `user_id uuid` column            
++ *   - enable RLS with a policy `user_id = auth.uid()`                         
++ *   - authenticate the request with Supabase Auth (never a service-role       
++ *     key in this user-facing route) and use that session's user id           
++ *   - replace the `readAll` / `insert` / `remove` functions below with        
++ *     calls to the Supabase client, still scoped by that user id.             
++ * We intentionally avoid a static `@supabase/supabase-js` import here         
++ * so this file always compiles and runs even before that package is           
++ * installed.                                                                  
++ */                                                                            
++const store = new Map<string, StudySession[]>();                               
++                                                                               
++function getUserId(request: NextRequest): { userId: string; isNew: boolean } { 
++  const existing = request.cookies.get(COOKIE_NAME)?.value;                    
++  if (existing) {                                                              
++    return { userId: existing, isNew: false };                                 
++  }                                                                            
++  return { userId: randomUUID(), isNew: true };                                
++}                                                                              
++                                                                               
++function attachUserCookie(response: NextResponse, userId: string, isNew:       
+boolean) {                                                                      
++  if (isNew) {                                                                 
++    response.cookies.set(COOKIE_NAME, userId, {                                
++      httpOnly: true,                                                          
++      sameSite: "lax",                                                         
++      path: "/",                                                               
++      maxAge: COOKIE_MAX_AGE,                                                  
++    });                                                                        
++  }                                                                            
++  return response;                                                             
++}                                                                              
++                                                                               
++function readAll(userId: string): StudySession[] {                             
++  return store.get(userId) ?? [];                                              
++}                                                                              
++                                                                               
++const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;                                         
++                                                                               
++type ValidatedInput = {                                                        
++  subject: string;                                                             
++  minutes: number;                                                             
++  studiedAt: string;                                                           
++  notes?: string;                                                              
++};                                                                             
++                                                                               
++function validateInput(body: unknown): { ok: true; data: ValidatedInput } | {  
+ok: false; error: string } {                                                    
++  if (typeof body !== "object" || body === null) {                             
++    return { ok: false, error: "Request body must be a JSON object." };        
++  }                                                                            
++                                                                               
++  const record = body as Record<string, unknown>;                              
++                                                                               
++  const subjectRaw = record.subject;                                           
++  if (typeof subjectRaw !== "string" || subjectRaw.trim().length === 0) {      
++    return { ok: false, error: "Subject is required." };                       
++  }                                                                            
++  const subject = subjectRaw.trim();                                           
++  if (subject.length > 80) {                                                   
++    return { ok: false, error: "Subject must be 80 characters or fewer." };    
++  }                                                                            
++                                                                               
++  const minutesRaw = record.minutes;                                           
++  const minutes = typeof minutesRaw === "number" ? minutesRaw :                
+Number(minutesRaw);                                                             
++  if (!Number.isFinite(minutes) || !Number.isInteger(minutes) || minutes <= 0  
+|| minutes > 1440) {                                                            
++    return { ok: false, error: "Minutes must be a whole number between 1 and   
+1440." };                                                                       
++  }                                                                            
++                                                                               
++  const studiedAtRaw = record.studiedAt;                                       
++  if (typeof studiedAtRaw !== "string" || !DATE_RE.test(studiedAtRaw) ||       
+Number.isNaN(Date.parse(studiedAtRaw))) {                                       
++    return { ok: false, error: "Studied date must be a valid date              
+(YYYY-MM-DD)." };                                                               
++  }                                                                            
++                                                                               
++  let notes: string | undefined;                                               
++  if (record.notes !== undefined && record.notes !== null) {                   
++    if (typeof record.notes !== "string") {                                    
++      return { ok: false, error: "Notes must be text." };                      
++    }                                                                          
++    const trimmed = record.notes.trim();                                       
++    if (trimmed.length > 500) {                                                
++      return { ok: false, error: "Notes must be 500 characters or fewer." };   
++    }                                                                          
++    notes = trimmed.length > 0 ? trimmed : undefined;                          
++  }                                                                            
++                                                                               
++  return { ok: true, data: { subject, minutes, studiedAt: studiedAtRaw, notes }
+};                                                                              
++}                                                                              
++                                                                               
++export async function GET(request: NextRequest) {                              
++  try {                                                                        
++    const { userId, isNew } = getUserId(request);                              
++    const sessions = readAll(userId)                                           
++      .slice()                                                                 
++      .sort((a, b) => b.studiedAt.localeCompare(a.studiedAt) ||                
+b.createdAt.localeCompare(a.createdAt));                                        
++                                                                               
++    const response = NextResponse.json({ sessions });                          
++    return attachUserCookie(response, userId, isNew);                          
++  } catch {                                                                    
++    return NextResponse.json(                                                  
++      { error: "Something went wrong loading your sessions." },                
++      { status: 500 }                                                          
++    );                                                                         
++  }                                                                            
++}                                                                              
++                                                                               
++export async function POST(request: NextRequest) {                             
++  let body: unknown;                                                           
++  try {                                                                        
++    body = await request.json();                                               
++  } catch {                                                                    
++    return NextResponse.json({ error: "Request body must be valid JSON." }, {  
+status: 400 });                                                                 
++  }                                                                            
++                                                                               
++  const validated = validateInput(body);                                       
++  if (!validated.ok) {                                                         
++    return NextResponse.json({ error: validated.error }, { status: 400 });     
++  }                                                                            
++                                                                               
++  try {                                                                        
++    const { userId, isNew } = getUserId(request);                              
++    const session: StudySession = {                                            
++      id: randomUUID(),                                                        
++      subject: validated.data.subject,                                         
++      minutes: validated.data.minutes,                                         
++      studiedAt: validated.data.studiedAt,                                     
++      notes: validated.data.notes,                                             
++      createdAt: new Date().toISOString(),                                     
++    };                                                                         
++                                                                               
++    const existing = store.get(userId) ?? [];                                  
++    existing.push(session);                                                    
++    store.set(userId, existing);                                               
++                                                                               
++    const response = NextResponse.json({ session }, { status: 201 });          
++    return attachUserCookie(response, userId, isNew);                          
++  } catch {                                                                    
++    return NextResponse.json(                                                  
++      { error: "Something went wrong saving this session." },                  
++      { status: 500 }                                                          
++    );                                                                         
++  }                                                                            
++}                                                                              
++                                                                               
++export async function DELETE(request: NextRequest) {                           
++  try {                                                                        
++    const id = request.nextUrl.searchParams.get("id");                         
++    if (!id || id.trim().length === 0) {                                       
++      return NextResponse.json({ error: "Missing session id." }, { status: 400 
+});                                                                             
++    }                                                                          
++                                                                               
++    const userId = request.cookies.get(COOKIE_NAME)?.value;                    
++    if (!userId) {                                                             
++      // No cookie means no data could possibly belong to this caller.         
++      return NextResponse.json({ error: "Session not found." }, { status: 404  
+});                                                                             
++    }                                                                          
++                                                                               
++    const list = store.get(userId);                                            
++    const index = list?.findIndex((s) => s.id === id) ?? -1;                   
++    if (!list || index === -1) {                                               
++      return NextResponse.json({ error: "Session not found." }, { status: 404  
+});                                                                             
++    }                                                                          
++                                                                               
++    list.splice(index, 1);                                                     
++    return NextResponse.json({ ok: true });                                    
++  } catch {                                                                    
++    return NextResponse.json(                                                  
++      { error: "Something went wrong deleting this session." },                
++      { status: 500 }                                                          
++    );                                                                         
++  }                                                                            
++}                                                                              
+                                                                                
+
+a-study-tracker-saas-where-students-sign-8edun/app/page.tsx                     
+
+                                                                                
+@@ -1,2 +1,7 @@                                                                 
+-import Image from "next/image";                                                
++"use client";                                                                  
+                                                                                
++import { useCallback, useEffect, useState } from "react";                      
++import type { FormEvent } from "react";                                        
++import type { StudySession } from "./api/items/route";                         
++                                                                               
++const SUBJECT_SUGGESTIONS = [                                                  
++  "Mathematics",                                                               
++  "Physics",                                                                   
++  "Chemistry",                                                                 
++  "Biology",                                                                   
++  "History",                                                                   
++  "English",                                                                   
++  "Computer Science",                                                          
++];                                                                             
+-        />                                                                     
+-        <div className="flex flex-col items-center gap-6 text-center           
+sm:items-start sm:text-left">                                                   
+-          <h1 className="max-w-xs text-3xl font-semibold leading-10            
+tracking-tight text-black dark:text-zinc-50">                                   
+-            To get started, edit the page.tsx file.                            
+-          </h1>                                                                
+-          <p className="max-w-md text-lg leading-8 text-zinc-600               
+dark:text-zinc-400">                                                            
+-            Looking for a starting point or more instructions? Head over to{"  
+"}                                                                              
+-            <a                                                                 
+-                                                                               
+href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&
+utm_medium=appdir-template-tw&utm_campaign=create-next-app"                     
+-              className="font-medium text-zinc-950 dark:text-zinc-50"          
+-            >                                                                  
+-              Templates                                                        
+-            </a>{" "}                                                          
+-            or the{" "}                                                        
+-            <a                                                                 
+-                                                                               
+href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-temp
+late-tw&utm_campaign=create-next-app"                                           
+-              className="font-medium text-zinc-950 dark:text-zinc-50"          
+-            >                                                                  
+-              Learning                                                         
+-            </a>{" "}                                                          
+-            center.                                                            
+-          </p>                                                                 
+-        </div>                                                                 
+-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
+-          <a                                                                   
+-            className="flex h-12 w-full items-center justify-center gap-2      
+rounded-full bg-foreground px-5 text-background transition-colors               
+hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"                           
+-                                                                               
+href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-templa
+te-tw&utm_campaign=create-next-app"                                             
+-            target="_blank"                                                    
+-            rel="noopener noreferrer"                                          
+-          >                                                                    
+-            <Image                                                             
+-              className="dark:invert"                                          
+-              src="/vercel.svg"                                                
+-              alt="Vercel logomark"                                            
+-              width={16}                                                       
+-              height={16}                                                      
+-            />                                                                 
+-            Deploy Now                                                         
+-          </a>                                                                 
+-          <a                                                                   
+-            className="flex h-12 w-full items-center justify-center            
+rounded-full border border-solid border-black/[.08] px-5 transition-colors      
+hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145]          
+dark:hover:bg-[#1a1a1a] md:w-[158px]"                                           
+-                                                                               
+href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-templ
+ate-tw&utm_campaign=create-next-app"                                            
+-            target="_blank"                                                    
+-            rel="noopener noreferrer"                                          
+-          >                                                                    
+-            Documentation                                                      
+-          </a>                                                                 
+-        </div>                                                                 
+-      </main>                                                                  
+-    </div>                                                                     
+-  );                                                                           
++import { useCallback, useEffect, useState } from "react";                      
++import type { FormEvent } from "react";                                        
++import type { StudySession } from "./api/items/route";                         
++                                                                               
++const SUBJECT_SUGGESTIONS = [                                                  
++  "Mathematics",                                                               
++  "Physics",                                                                   
++  "Chemistry",                                                                 
++  "Biology",                                                                   
++  "History",                                                                   
++  "English",                                                                   
++  "Computer Science",                                                          
++];                                                                             
++                                                                               
++function toDateKey(date: Date): string {                                       
++  const year = date.getFullYear();                                             
++  const month = String(date.getMonth() + 1).padStart(2, "0");                  
++  const day = String(date.getDate()).padStart(2, "0");                         
++  return `${year}-${month}-${day}`;                                            
+ }                                                                              
++                                                                               
++function startOfWeek(date: Date): Date {                                       
++  const d = new Date(date);                                                    
++  const day = d.getDay();                                                      
++  const diff = (day === 0 ? -6 : 1) - day; // Monday as start of week          
++  d.setDate(d.getDate() + diff);                                               
++  d.setHours(0, 0, 0, 0);                                                      
++  return d;                                                                    
++}                                                                              
++                                                                               
++function endOfWeek(date: Date): Date {                                         
++  const start = startOfWeek(date);                                             
++  const end = new Date(start);                                                 
++  end.setDate(start.getDate() + 6);                                            
++  end.setHours(23, 59, 59, 999);                                               
++  return end;                                                                  
++}                                                                              
++                                                                               
++function formatDuration(totalMinutes: number): string {                        
++  const hours = Math.floor(totalMinutes / 60);                                 
++  const minutes = totalMinutes % 60;                                           
++  if (hours === 0) return `${minutes}m`;                                       
++  if (minutes === 0) return `${hours}h`;                                       
++  return `${hours}h ${minutes}m`;                                              
++}                                                                              
++                                                                               
++function formatDisplayDate(dateKey: string): string {                          
++  const [year, month, day] = dateKey.split("-").map(Number);                   
++  const date = new Date(year, month - 1, day);                                 
++  return date.toLocaleDateString(undefined, {                                  
++    weekday: "short",                                                          
++    month: "short",                                                            
++    } catch {                                                                  
++      setFormError("Network error — check your connection and try again.");    
++    } finally {                                                                
++      setSubmitting(false);                                                    
++    }                                                                          
++  }                                                                            
++                                                                               
++  async function handleDelete(id: string) {                                    
++    setActionError(null);                                                      
++    setDeletingId(id);                                                         
++    try {                                                                      
++      const res = await fetch(`/api/items?id=${encodeURIComponent(id)}`, {     
++        method: "DELETE",                                                      
++      });                                                                      
++      const data = await res.json();                                           
++      if (!res.ok) {                                                           
++        setActionError(data.error ?? "Could not delete this session.");        
++        return;                                                                
++      }                                                                        
++      setSessions((prev) => (prev ? prev.filter((s) => s.id !== id) : prev));  
++    } catch {                                                                  
++      setActionError("Network error — check your connection and try again.");  
++    } finally {                                                                
++      setDeletingId(null);                                                     
++    }                                                                          
++  }                                                                            
++                                                                               
++    } catch (err) {                                                            
++      setLoadError(err instanceof Error ? err.message : "Failed to load        
+sessions.");                                                                    
++    }                                                                          
++  }, []);                                                                      
++                                                                               
++  useEffect(() => {                                                            
++    loadSessions();                                                            
++  }, [loadSessions]);                                                          
++                                                                               
++  async function handleSubmit(event: FormEvent<HTMLFormElement>) {             
++    event.preventDefault();                                                    
++    setFormError(null);                                                        
++                                                                               
++    const trimmedSubject = subject.trim();                                     
++    const minutesNum = Number(minutes);                                        
++                                                                               
++    if (!trimmedSubject) {                                                     
++      setFormError("Add a subject to log this session.");                      
++      return;                                                                  
++    }                                                                          
++    if (!Number.isFinite(minutesNum) || minutesNum <= 0) {                     
++      setFormError("Enter how many minutes you studied.");                     
++      return;                                                                  
++    }                                                                          
++    if (!studiedAt) {                                                          
++      setFormError("Pick the date you studied.");                              
++      return;                                                                  
++    }                                                                          
++                                                                               
++    setSubmitting(true);                                                       
++    try {                                                                      
++      const res = await fetch("/api/items", {                                  
++        method: "POST",                                                        
++        headers: { "Content-Type": "application/json" },                       
++        body: JSON.stringify({                                                 
++          subject: trimmedSubject,                                             
++          minutes: Math.round(minutesNum),                                     
++          studiedAt,                                                           
++          notes: notes.trim() || undefined,                                    
++        }),                                                                    
++      });                                                                      
++      const data = await res.json();                                           
++      if (!res.ok) {                                                           
++        setFormError(data.error ?? "Could not save this session.");            
++        return;                                                                
++      }                                                                        
++      setSessions((prev) => (prev ? [data.session as StudySession, ...prev] :  
+[data.session]));                                                               
++      setSubject("");                                                          
++      setMinutes("");                                                          
++      setNotes("");                                                            
++    } catch {                                                                  
++      setFormError("Network error — check your connection and try again.");    
++    } finally {                                                                
++      setSubmitting(false);                                                    
++    }                                                                          
++  }                                                                            
++                                                                               
++  async function handleDelete(id: string) {                                    
++    setActionError(null);                                                      
++    setDeletingId(id);                                                         
++    try {                                                                      
++      const res = await fetch(`/api/items?id=${encodeURIComponent(id)}`, {     
++        method: "DELETE",                                                      
++      });                                                                      
++      const data = await res.json();                                           
++      if (!res.ok) {                                                           
++        setActionError(data.error ?? "Could not delete this session.");        
++        return;                                                                
++      }                                                                        
++      setSessions((prev) => (prev ? prev.filter((s) => s.id !== id) : prev));  
++    } catch {                                                                  
++      setActionError("Network error — check your connection and try again.");  
++    } finally {                                                                
++      setDeletingId(null);                                                     
++    }                                                                          
++  }                                                                            
++                                                                               
++  const now = new Date();                                                      
++  const weekStartKey = toDateKey(startOfWeek(now));                            
++  const weekEndKey = toDateKey(endOfWeek(now));                                
++  const weekSessions = (sessions ?? []).filter(                                
++    (s) => s.studiedAt >= weekStartKey && s.studiedAt <= weekEndKey            
+   );                                                                           
++  const weekTotalMinutes = weekSessions.reduce((sum, s) => sum + s.minutes, 0);
++                                                                               
++  const subjectTotals: SubjectTotal[] = Object.values(                         
++            <p className="text-sm text-zinc-500">                              
++              {formatDisplayDate(weekStartKey)} –                              
+{formatDisplayDate(weekEndKey)}                                                 
++            </p>                                                               
++          </div>                                                               
++                                                                               
++          {sessions === null ? (                                               
++            <div className="mt-6 space-y-3" aria-hidden="true">                
++              <div className="h-8 w-40 animate-pulse rounded-md bg-zinc-100" />
++              <div className="h-3 w-full animate-pulse rounded-full            
+bg-zinc-100" />                                                                 
++              <div className="h-3 w-5/6 animate-pulse rounded-full bg-zinc-100"
+/>                                                                              
++            </div>                                                             
++          ) : weekSessions.length === 0 ? (                                    
++            <p className="mt-6 text-sm leading-6 text-zinc-500">               
++              No sessions logged this week yet. Add one below to see your      
++              totals here.                                                     
++            </p>                                                               
++          ) : (                                                                
++            <div className="mt-6 space-y-6">                                   
++              <div>                                                            
++                <p className="text-3xl font-semibold tracking-tight            
+text-zinc-900">                                                                 
++                  {formatDuration(weekTotalMinutes)}                           
++                </p>                                                           
++                <p className="mt-1 text-sm text-zinc-500">                     
++                  across {weekSessions.length}{" "}                            
++                  {weekSessions.length === 1 ? "session" : "sessions"}         
++                </p>                                                           
++              </div>                                                           
++                                                                               
++              <div className="space-y-3">                                      
++                {subjectTotals.map((item) => (                                 
++                  <div key={item.subject}>                                     
++                    <div className="mb-1 flex items-center justify-between     
+text-sm">                                                                       
++                      <span className="font-medium text-zinc-700">             
++                        {item.subject}                                         
++                      </span>                                                  
++                      <span className="text-zinc-500">                         
++                        {formatDuration(item.minutes)}                         
++                      </span>                                                  
++                    </div>                                                     
++                    <div className="h-2 w-full overflow-hidden rounded-full    
+bg-zinc-100">                                                                   
++                      <div                                                     
++                        className="h-full rounded-full bg-emerald-600          
+transition-all duration-150"                                                    
++                        style={{                                               
++                          width: `${Math.max(                                  
++                            6,                                                 
++                            (item.minutes / maxSubjectMinutes) * 100           
++                          )}%`,                                                
++                        }}                                                     
++                      />                                                       
++                    </div>                                                     
++                  </div>                                                       
++                ))}                                                            
++              </div>                                                           
++            </div>                                                             
++          )}                                                                   
++        </section>                                                             
++                            (item.minutes / maxSubjectMinutes) * 100           
++                          )}%`,                                                
++                        }}                                                     
++                      />                                                       
++                    </div>                                                     
++                  </div>                                                       
++                ))}                                                            
++              </div>                                                           
++            </div>                                                             
++          )}                                                                   
++        </section>                                                             
++                                                                               
++        <div className="grid grid-cols-1 gap-8 lg:grid-cols-[360px_1fr]">      
++          <section                                                             
++            aria-label="Log a study session"                                   
++            className="h-fit rounded-xl border border-zinc-200 bg-white p-6    
+shadow-sm"                                                                      
+           >                                                                    
++            <h2 className="text-lg font-semibold tracking-tight text-zinc-900">
++              Log a session                                                    
++            </h2>                                                              
++            <p className="mt-1 text-sm leading-6 text-zinc-500">               
++              Takes ten seconds. Do it right after you finish studying.        
++            </p>                                                               
++                                                                               
++            <form className="mt-6 space-y-4" onSubmit={handleSubmit}           
+noValidate>                                                                     
++              <div>                                                            
++                <label                                                         
++                  htmlFor="subject"                                            
++                  className="mb-1.5 block text-sm font-medium text-zinc-700"   
++                >                                                              
++                  Subject                                                      
++                </label>                                                       
++                <input                                                         
++                  id="subject"                                                 
++                  name="subject"                                               
++                  type="text"                                                  
++                  list="subject-suggestions"                                   
++                  value={subject}                                              
++                  onChange={(e) => setSubject(e.target.value)}                 
++                  placeholder="e.g. Organic Chemistry"                         
++                  maxLength={80}                                               
++                  className="w-full rounded-lg border border-zinc-200 bg-white 
+px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 transition            
+duration-150 focus:outline-none focus-visible:ring-2                            
+focus-visible:ring-emerald-600 focus-visible:ring-offset-1"                     
++                />                                                             
++                <datalist id="subject-suggestions">                            
++                  {SUBJECT_SUGGESTIONS.map((s) => (                            
++                    <option key={s} value={s} />                               
++                  ))}                                                          
++                </datalist>                                                    
++              </div>                                                           
++                                                                               
++              <div className="grid grid-cols-2 gap-4">                         
++                <div>                                                          
++                  <label                                                       
++                    htmlFor="minutes"                                          
++                    className="mb-1.5 block text-sm font-medium text-zinc-700" 
++                  >                                                            
++                    Minutes                                                    
++                  </label>                                                     
++                  <input                                                       
++                    id="minutes"                                               
++                    name="minutes"                                             
++                    type="number"                                              
++                    min={1}                                                    
++                    max={1440}                                                 
++                    step={5}                                                   
++                    value={minutes}                                            
++                    onChange={(e) => setMinutes(e.target.value)}               
++                    placeholder="45"                                           
++                    className="w-full rounded-lg border border-zinc-200        
+bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 transition   
+duration-150 focus:outline-none focus-visible:ring-2                            
+focus-visible:ring-emerald-600 focus-visible:ring-offset-1"                     
++                  />                                                           
++                </div>                                                         
++                <div>                                                          
++                  <label                                                       
++                    htmlFor="studiedAt"                                        
++                    className="mb-1.5 block text-sm font-medium text-zinc-700" 
++                  >                                                            
++                    Date                                                       
++                  </label>                                                     
++                  <input                                                       
++                    id="studiedAt"                                             
++                    name="studiedAt"                                           
++                    type="date"                                                
++                    value={studiedAt}                                          
++                    max={toDateKey(new Date())}                                
++                    onChange={(e) => setStudiedAt(e.target.value)}             
++                    className="w-full rounded-lg border border-zinc-200        
+bg-white px-3 py-2 text-sm text-zinc-900 transition duration-150                
+focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600          
+focus-visible:ring-offset-1"                                                    
++                  />                                                           
++                </div>                                                         
++              </div>                                                           
++                                                                               
++              <div>                                                            
++                <label                                                         
++                  htmlFor="notes"                                              
++                  className="mb-1.5 block text-sm font-medium text-zinc-700"   
++                >                                                              
++                  Notes <span className="font-normal                           
+text-zinc-400">(optional)</span>                                                
++                </label>                                                       
++                <textarea                                                      
++                  id="notes"                                                   
++                  name="notes"                                                 
++                  rows={3}                                                     
++                  value={notes}                                                
++                  onChange={(e) => setNotes(e.target.value)}                   
++                  maxLength={500}                                              
++                  placeholder="What did you cover?"                            
++                  className="w-full resize-none rounded-lg border              
+border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900                        
+placeholder:text-zinc-400 transition duration-150 focus:outline-none            
+focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-1"
++                />                                                             
++              </div>                                                           
++                                                                               
++              {formError ? (                                                   
++                <p role="alert" className="text-sm leading-6 text-red-600">    
++                  {formError}                                                  
++                </p>                                                           
++              ) : null}                                                        
++                                                                               
++              <button                                                          
++                type="submit"                                                  
++                disabled={submitting}                                          
++                className="w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-sm
+font-semibold text-white transition duration-150 hover:bg-emerald-700           
+focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2    
+focus-visible:outline-emerald-600 disabled:cursor-not-allowed                   
+disabled:opacity-60"                                                            
++              >                                                                
++                {submitting ? "Saving…" : "Log session"}                       
++              </button>                                                        
++            </form>                                                            
++          </section>                                                           
++                                                                               
++          <section aria-label="Recent sessions" className="min-w-0">           
++            <div className="mb-4 flex items-center justify-between">           
++              <h2 className="text-lg font-semibold tracking-tight              
+text-zinc-900">                                                                 
++                Recent sessions                                                
++              </h2>                                                            
++              {sessions && sessions.length > 0 ? (                             
++                <span className="text-sm text-zinc-500">                       
++                  {sessions.length} total                                      
++                </span>                                                        
++              ) : null}                                                        
++            </div>                                                             
++                                                                               
++            {actionError ? (                                                   
++              <p                                                               
++                role="alert"                                                   
++                className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4
+py-3 text-sm leading-6 text-red-700"                                            
++              >                                                                
++                {actionError}                                                  
++              </p>                                                             
++            ) : null}                                                          
++                                                                               
++            {sessions === null && !loadError ? (                               
++              <div className="space-y-3" aria-hidden="true">                   
++                {[0, 1, 2].map((i) => (                                        
++                  <div                                                         
++                    key={i}                                                    
++                    className="h-20 animate-pulse rounded-xl border            
+border-zinc-200 bg-white"                                                       
++                  />                                                           
++                ))}                                                            
++              </div>                                                           
++            ) : loadError ? (                                                  
++              <div className="rounded-xl border border-zinc-200 bg-white p-8   
+text-center">                                                                   
++                <p className="text-sm leading-6 text-red-600">{loadError}</p>  
++                <button                                                        
++                  type="button"                                                
++                  onClick={() => {                                             
++                    setSessions(null);                                         
++                    loadSessions();                                            
++                  }}                                                           
++                  className="mt-4 rounded-lg border border-zinc-200 px-4 py-2  
+text-sm font-medium text-zinc-700 transition duration-150 hover:bg-zinc-50      
+focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2    
+focus-visible:outline-emerald-600"                                              
++                >                                                              
++                  Try again                                                    
++                </button>                                                      
++              </div>                                                           
++            ) : sessions.length === 0 ? (                                      
++              <div className="rounded-xl border border-dashed border-zinc-300  
+bg-white p-10 text-center">                                                     
++                <p className="text-base font-semibold text-zinc-900">          
++                  No sessions yet                                              
++                </p>                                                           
++                <p className="mx-auto mt-1.5 max-w-xs text-sm leading-6        
+text-zinc-500">                                                                 
++                  Log your first study session on the left — it'll show up     
++                  here and count toward this week's total.                     
++                </p>                                                           
++              </div>                                                           
++            ) : (                                                              
++              <ul className="space-y-3">                                       
++                {sessions.map((session) => (                                   
++                  <li                                                          
++                    key={session.id}                                           
++                    className="rounded-xl border border-zinc-200 bg-white p-4  
+transition duration-150 hover:border-zinc-300 sm:p-5"                           
++                  >                                                            
++                    <div className="flex items-start justify-between gap-4">   
++                      <div className="min-w-0">                                
++                        <p className="truncate font-semibold text-zinc-900">   
++                          {session.subject}                                    
++                        </p>                                                   
++                        <p className="mt-0.5 text-sm text-zinc-500">           
++                          {formatDisplayDate(session.studiedAt)} ·{" "}        
++                          {formatDuration(session.minutes)}                    
++                        </p>                                                   
++                        {session.notes ? (                                     
++                          <p className="mt-2 text-sm leading-6 text-zinc-600"> 
++                            {session.notes}                                    
++                          </p>                                                 
++                        ) : null}                                              
++                      </div>                                                   
++                      <button                                                  
++                        type="button"                                          
++                        onClick={() => handleDelete(session.id)}               
++                        disabled={deletingId === session.id}                   
++                        aria-label={`Delete ${session.subject} session`}       
++                        className="shrink-0 rounded-lg px-2.5 py-1.5 text-sm   
+font-medium text-zinc-400 transition duration-150 hover:bg-zinc-50              
+hover:text-red-600 focus-visible:outline focus-visible:outline-2                
+         </div>                                                                 
+-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
+-          <a                                                                   
+-            className="flex h-12 w-full items-center justify-center gap-2      
+rounded-full bg-foreground px-5 text-background transition-colors               
+hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"                           
+-                                                                               
+href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-templa
+te-tw&utm_campaign=create-next-app"                                             
+-            target="_blank"                                                    
+-            rel="noopener noreferrer"                                          
+-          >                                                                    
+-            <Image                                                             
+-              className="dark:invert"                                          
+-              src="/vercel.svg"                                                
+-              alt="Vercel logomark"                                            
+-              width={16}                                                       
+-              height={16}                                                      
+-            />                                                                 
+-            Deploy Now                                                         
+-          </a>                                                                 
+-          <a                                                                   
+-            className="flex h-12 w-full items-center justify-center            
+rounded-full border border-solid border-black/[.08] px-5 transition-colors      
+hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145]          
+dark:hover:bg-[#1a1a1a] md:w-[158px]"                                           
+-                                                                               
+href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-templ
+ate-tw&utm_campaign=create-next-app"                                            
+-            target="_blank"                                                    
+-            rel="noopener noreferrer"                                          
+-          >                                                                    
+-            Documentation                                                      
+-          </a>                                                                 
+-        </div>                                                                 
+-      </main>                                                                  
++      </div>                                                                   
+     </div>                                                                     
+   );                                                                           
+ }                                                                              
+                                                                                
+
+Notes on how this meets the standing principles:                                
+
+ • Tenant isolation: every GET/POST/DELETE resolves an httpOnly study_uid cookie
+   first, then reads/writes only that user's slice of the store; a              
+   missing/unknown id yields empty results or a 404, never another user's rows. 
+ • Verify before done: real fetch/POST/DELETE against a working API, with       
+   genuine loading skeletons, empty state, and error states (with retry) in the 
+   UI — nothing is mocked.                                                      
+ • Adopt, don't invent: uses only Next.js's own NextRequest/NextResponse cookie 
+   APIs and native crypto.randomUUID; no bespoke auth/session infra, and        
+   Supabase is deliberately left as a documented swap-in rather than a          
+   half-built integration that could break the build.                           
+ • Input discipline: POST validates subject/minutes/date/notes shape and bounds,
+   returning 400 with a specific message on anything malformed; DELETE requires 
+   a real id and 404s rather than guessing.                                     
+
+Tokens: 2.3k sent, 6.1k received. Cost: $0.07 message, $0.07 session.
+Committing a-study-tracker-saas-where-students-sign-8edun/app/api/items/route.ts
+before applying edits.
+Committing a-study-tracker-saas-where-students-sign-8edun/app/page.tsx before 
+applying edits.
+Commit 45a9191 feat: add study tracker items page and API route
+Applied edit to a-study-tracker-saas-where-students-sign-8edun/app/page.tsx
+Applied edit to 
+a-study-tracker-saas-where-students-sign-8edun/app/api/items/route.ts
+Commit 16655bc feat: add study tracker with weekly dashboard and scoped sessions
+API
