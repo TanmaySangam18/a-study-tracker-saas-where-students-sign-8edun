@@ -58,6 +58,11 @@ function formatDisplayDate(dateKey: string): string {
 
 type SubjectTotal = { subject: string; minutes: number };
 
+const FOCUS_RING =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2";
+const FOCUS_RING_ACCENT =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2";
+
 export default function Home() {
   const [sessions, setSessions] = useState<StudySession[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -183,13 +188,13 @@ export default function Home() {
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
       <div className="mx-auto max-w-5xl px-6 py-12 sm:px-8 sm:py-16">
         <header className="mb-10">
-          <p className="text-sm font-semibold uppercase tracking-wide text-emerald-600">
+          <p className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
             Study Tracker
           </p>
           <h1 className="mt-2 max-w-2xl text-3xl font-semibold leading-tight tracking-tight text-zinc-900 sm:text-4xl">
             Your week at a glance
           </h1>
-          <p className="mt-3 max-w-xl text-base leading-7 text-zinc-500">
+          <p className="mt-4 max-w-xl text-base leading-7 text-zinc-500">
             Log every session the moment you finish it. Your weekly totals and
             subject breakdown below update instantly — no guesswork, just
             what you actually studied.
@@ -210,7 +215,8 @@ export default function Home() {
           </div>
 
           {sessions === null ? (
-            <div className="mt-6 space-y-3" aria-hidden="true">
+            <div className="mt-6 space-y-4" aria-hidden="true">
+              <span className="sr-only">Loading this week&rsquo;s summary…</span>
               <div className="h-8 w-40 animate-pulse rounded-md bg-zinc-100" />
               <div className="h-3 w-full animate-pulse rounded-full bg-zinc-100" />
               <div className="h-3 w-5/6 animate-pulse rounded-full bg-zinc-100" />
@@ -226,26 +232,24 @@ export default function Home() {
                 <p className="text-3xl font-semibold tracking-tight text-zinc-900">
                   {formatDuration(weekTotalMinutes)}
                 </p>
-                <p className="mt-1 text-sm text-zinc-500">
+                <p className="mt-2 text-sm text-zinc-500">
                   across {weekSessions.length}{" "}
                   {weekSessions.length === 1 ? "session" : "sessions"}
                 </p>
               </div>
 
-              <div className="space-y-3">
+              <div className="space-y-4">
                 {subjectTotals.map((item) => (
                   <div key={item.subject}>
-                    <div className="mb-1 flex items-center justify-between text-sm">
-                      <span className="font-medium text-zinc-700">
-                        {item.subject}
-                      </span>
+                    <div className="mb-2 flex items-center justify-between text-sm">
+                      <span className="text-zinc-700">{item.subject}</span>
                       <span className="text-zinc-500">
                         {formatDuration(item.minutes)}
                       </span>
                     </div>
                     <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-100">
                       <div
-                        className="h-full rounded-full bg-emerald-600 transition-all duration-150"
+                        className="h-full rounded-full bg-zinc-900 transition-all duration-150"
                         style={{
                           width: `${Math.max(
                             6,
@@ -269,7 +273,7 @@ export default function Home() {
             <h2 className="text-lg font-semibold tracking-tight text-zinc-900">
               Log a session
             </h2>
-            <p className="mt-1 text-sm leading-6 text-zinc-500">
+            <p className="mt-2 text-sm leading-6 text-zinc-500">
               Takes ten seconds. Do it right after you finish studying.
             </p>
 
@@ -277,7 +281,7 @@ export default function Home() {
               <div>
                 <label
                   htmlFor="subject"
-                  className="mb-1.5 block text-sm font-medium text-zinc-700"
+                  className="mb-2 block text-sm text-zinc-700"
                 >
                   Subject
                 </label>
@@ -290,7 +294,7 @@ export default function Home() {
                   onChange={(e) => setSubject(e.target.value)}
                   placeholder="e.g. Organic Chemistry"
                   maxLength={80}
-                  className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 transition duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-1"
+                  className={`w-full rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 transition duration-150 ${FOCUS_RING}`}
                 />
                 <datalist id="subject-suggestions">
                   {SUBJECT_SUGGESTIONS.map((s) => (
@@ -303,7 +307,7 @@ export default function Home() {
                 <div>
                   <label
                     htmlFor="minutes"
-                    className="mb-1.5 block text-sm font-medium text-zinc-700"
+                    className="mb-2 block text-sm text-zinc-700"
                   >
                     Minutes
                   </label>
@@ -317,13 +321,13 @@ export default function Home() {
                     value={minutes}
                     onChange={(e) => setMinutes(e.target.value)}
                     placeholder="45"
-                    className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 transition duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-1"
+                    className={`w-full rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 transition duration-150 ${FOCUS_RING}`}
                   />
                 </div>
                 <div>
                   <label
                     htmlFor="studiedAt"
-                    className="mb-1.5 block text-sm font-medium text-zinc-700"
+                    className="mb-2 block text-sm text-zinc-700"
                   >
                     Date
                   </label>
@@ -334,7 +338,7 @@ export default function Home() {
                     value={studiedAt}
                     max={toDateKey(new Date())}
                     onChange={(e) => setStudiedAt(e.target.value)}
-                    className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 transition duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-1"
+                    className={`w-full rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm text-zinc-900 transition duration-150 ${FOCUS_RING}`}
                   />
                 </div>
               </div>
@@ -342,9 +346,9 @@ export default function Home() {
               <div>
                 <label
                   htmlFor="notes"
-                  className="mb-1.5 block text-sm font-medium text-zinc-700"
+                  className="mb-2 block text-sm text-zinc-700"
                 >
-                  Notes <span className="font-normal text-zinc-400">(optional)</span>
+                  Notes <span className="text-zinc-400">(optional)</span>
                 </label>
                 <textarea
                   id="notes"
@@ -354,7 +358,7 @@ export default function Home() {
                   onChange={(e) => setNotes(e.target.value)}
                   maxLength={500}
                   placeholder="What did you cover?"
-                  className="w-full resize-none rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 transition duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-1"
+                  className={`w-full resize-none rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 transition duration-150 ${FOCUS_RING}`}
                 />
               </div>
 
@@ -367,7 +371,7 @@ export default function Home() {
               <button
                 type="submit"
                 disabled={submitting}
-                className="w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition duration-150 hover:bg-emerald-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
+                className={`w-full rounded-lg bg-emerald-600 px-6 py-4 text-sm font-semibold text-white transition duration-150 hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60 ${FOCUS_RING_ACCENT}`}
               >
                 {submitting ? "Saving…" : "Log session"}
               </button>
@@ -389,14 +393,15 @@ export default function Home() {
             {actionError ? (
               <p
                 role="alert"
-                className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm leading-6 text-red-700"
+                className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-4 text-sm leading-6 text-red-700"
               >
                 {actionError}
               </p>
             ) : null}
 
             {sessions === null && !loadError ? (
-              <div className="space-y-3" aria-hidden="true">
+              <div className="space-y-4" aria-hidden="true">
+                <span className="sr-only">Loading your recent sessions…</span>
                 {[0, 1, 2].map((i) => (
                   <div
                     key={i}
@@ -413,7 +418,7 @@ export default function Home() {
                     setSessions(null);
                     loadSessions();
                   }}
-                  className="mt-4 rounded-lg border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 transition duration-150 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600"
+                  className={`mt-4 rounded-lg border border-zinc-200 px-4 py-2 text-sm text-zinc-700 transition duration-150 hover:bg-zinc-50 ${FOCUS_RING}`}
                 >
                   Try again
                 </button>
@@ -423,24 +428,24 @@ export default function Home() {
                 <p className="text-base font-semibold text-zinc-900">
                   No sessions yet
                 </p>
-                <p className="mx-auto mt-1.5 max-w-xs text-sm leading-6 text-zinc-500">
-                  Log your first study session on the left — it'll show up
-                  here and count toward this week's total.
+                <p className="mx-auto mt-2 max-w-xs text-sm leading-6 text-zinc-500">
+                  Log your first study session on the left — it&rsquo;ll show up
+                  here and count toward this week&rsquo;s total.
                 </p>
               </div>
             ) : (
-              <ul className="space-y-3">
+              <ul className="space-y-4">
                 {sessions.map((session) => (
                   <li
                     key={session.id}
-                    className="rounded-xl border border-zinc-200 bg-white p-4 transition duration-150 hover:border-zinc-300 sm:p-5"
+                    className="rounded-xl border border-zinc-200 bg-white p-4 transition duration-150 hover:border-zinc-300 sm:p-6"
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
                         <p className="truncate font-semibold text-zinc-900">
                           {session.subject}
                         </p>
-                        <p className="mt-0.5 text-sm text-zinc-500">
+                        <p className="mt-2 text-sm text-zinc-500">
                           {formatDisplayDate(session.studiedAt)} ·{" "}
                           {formatDuration(session.minutes)}
                         </p>
@@ -455,7 +460,7 @@ export default function Home() {
                         onClick={() => handleDelete(session.id)}
                         disabled={deletingId === session.id}
                         aria-label={`Delete ${session.subject} session`}
-                        className="shrink-0 rounded-lg px-2.5 py-1.5 text-sm font-medium text-zinc-400 transition duration-150 hover:bg-zinc-50 hover:text-red-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+                        className={`shrink-0 rounded-lg px-4 py-2 text-sm text-zinc-400 transition duration-150 hover:bg-zinc-50 hover:text-zinc-900 hover:underline disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING}`}
                       >
                         {deletingId === session.id ? "…" : "Delete"}
                       </button>
